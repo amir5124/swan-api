@@ -10,21 +10,22 @@ const stableStringify = require('json-stable-stringify');
 const app = express();
 const port = 3000;
 
-// --- KONSTANTA API ---
 const CLIENT_ID = '0199dc00-f2df-74b1-95e4-8664bdaaa9dd';
 const CLIENT_SECRET = '425f8e4a-0f0c-474a-aa4f-64538f87bed4.0d.DIYVm+96QGa0mCg2X5JxRSG79BuHQJw+YGPV7aCuUIk=';
 const BASE_URL = 'https://natsu-api-sandbox.smbpay.id';
 const CLIENT_TOKEN_URL = `${BASE_URL}/oauth/token`;
 const B2B_TOKEN_ENDPOINT = '/v2.0/access-token/b2b/';
 const B2B_TOKEN_URL = `${BASE_URL}${B2B_TOKEN_ENDPOINT}`;
+
+// PERBAIKAN: Mengembalikan trailing slash sesuai dokumentasi
 const RELATIVE_PATH = '/cobrand-saving/v1.0/registration-account-creation/';
+
 const CREATE_ACCOUNT_URL = `${BASE_URL}${RELATIVE_PATH}`;
 const PRIVATE_KEY_PATH = './private.pem';
 
+
 let clientAccessToken = null;
 let b2bAccessToken = null;
-
-// --- FUNGSI SIGNATURE ---
 
 const createAsymmetricSignature = (srvTimestamp, clientId, privateKeyPath) => {
     try {
@@ -40,38 +41,39 @@ const createAsymmetricSignature = (srvTimestamp, clientId, privateKeyPath) => {
     }
 };
 
-const createSymmetricSignature = (
+const generateSymmetricSignature = (
     method,
-    relativePath,
+    path,
     accessToken,
     payload,
     timestamp,
-    clientSecret
+    secretKey
 ) => {
-    // 1. Minify & Sort Payload
     let jsonString = stableStringify(payload);
+    console.log("[SIGNATURE LOG] Stable Stringify Body:", jsonString);
 
-    // 2. Hash Body: SHA-256, Hex, Lowercase
     const hash = crypto.createHash('sha256').update(jsonString).digest('hex').toLowerCase();
 
-    // 3. String to Sign: $method:$path:$token:$hash:$timestamp
     const stringToSign = [
         method,
-        relativePath,
+        path,
         accessToken,
         hash,
         timestamp
     ].join(':');
 
-    // 4. Signature: HMAC SHA-512 dengan CLIENT_SECRET
-    const signature = crypto.createHmac('sha512', clientSecret)
+    const hmacHex = crypto.createHmac('sha512', secretKey)
         .update(stringToSign)
-        .digest('base64');
+        .digest('hex');
 
-    return { signature, stringToSign, hash, jsonString }; // Mengembalikan jsonString untuk log
+    const signature = Buffer.from(hmacHex).toString('base64');
+
+    console.log(`[SIGNATURE LOG] Body Hash (SHA-256): ${hash}`);
+    console.log(`[SIGNATURE LOG] String to Sign: ${stringToSign}`);
+    console.log(`[SIGNATURE LOG] Signature (Base64): ${signature.substring(0, 30)}... (omitted)`);
+
+    return { signature, stringToSign, hash, jsonString };
 };
-
-// --- FUNGSI TOKEN & API ---
 
 const getClientToken = async () => {
     const data = {
@@ -84,10 +86,16 @@ const getClientToken = async () => {
         'Content-Type': 'application/x-www-form-urlencoded'
     };
 
+    console.log('\n--- LOG: GET CLIENT TOKEN REQUEST ---');
+    console.log(`[REQUEST URL]: ${CLIENT_TOKEN_URL}`);
+    console.log(`[REQUEST BODY]: ${payload}`);
+    console.log('------------------------------------');
+
     try {
         const response = await axios.post(CLIENT_TOKEN_URL, payload, { headers });
         clientAccessToken = response.data.access_token;
         console.log('✅ Token Klien berhasil didapatkan.');
+        console.log(`[RESPONSE TOKEN]: ${clientAccessToken.substring(0, 15)}... (omitted)`);
         return clientAccessToken;
     } catch (error) {
         if (error.response) {
@@ -120,24 +128,27 @@ const getB2BToken = async () => {
             'Content-Type': 'application/json'
         };
 
-        // --- LOG ASYMMETRIC SIGNATURE (B2B Token) ---
-        console.log('\n--- LOG B2B TOKEN REQUEST (Asymmetric Signature) ---');
-        console.log(`[REQUEST BODY]: ${requestBody}`);
+        console.log('\n--- LOG: GET B2B TOKEN REQUEST (Asymmetric Signature) ---');
+        console.log(`[REQUEST URL]: ${B2B_TOKEN_URL}`);
         console.log(`[STRING TO SIGN]: ${stringToSign}`);
         console.log(`[REQUEST HEADER] X-TIMESTAMP: ${srvTimestamp}`);
-        console.log(`[REQUEST HEADER] X-SIGNATURE: ${signature}`);
-        console.log(`[REQUEST URL]: ${B2B_TOKEN_URL}`);
-        console.log('--------------------------------------------------');
+        console.log(`[REQUEST HEADER] X-SIGNATURE: ${signature.substring(0, 30)}... (omitted)`);
+        console.log('---------------------------------------------------------');
 
         const response = await axios.post(B2B_TOKEN_URL, requestBody, { headers });
         b2bAccessToken = response.data.accessToken;
+
         console.log(`✅ Token B2B berhasil didapatkan.`);
+        console.log(`[RESPONSE TOKEN]: ${b2bAccessToken.substring(0, 15)}... (omitted)`);
+        console.log(`[RESPONSE BODY]: ${JSON.stringify(response.data)}`);
+
         return b2bAccessToken;
     } catch (error) {
         if (error.code === 'ENOENT') {
             console.error(`❌ File Kunci Privat tidak ditemukan di ${PRIVATE_KEY_PATH}.`);
         } else if (error.response) {
             console.error(`❌ Gagal ambil token B2B! Server: ${error.response.status}`);
+            console.error(`[ERROR RESPONSE BODY]: ${JSON.stringify(error.response.data)}`);
         } else {
             console.error(`❌ Gagal ambil token B2B! Error: ${error.message}`);
         }
@@ -145,18 +156,18 @@ const getB2BToken = async () => {
     }
 };
 
-const createAccount = async () => {
+const createAccount = async (payload) => {
     const httpMethod = 'POST';
     const relativePath = RELATIVE_PATH;
 
     if (!b2bAccessToken) {
-        return { status: 503, data: { pesan: 'Token B2B not available. Please initialize the server.' } };
+        return { status: 503, data: { pesan: 'B2B Token not available. Please initialize the server.' } };
     }
 
     const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
 
-    // Payload (diasumsikan statis untuk contoh ini, dalam aplikasi nyata ambil dari req.body)
-    const requestBodyObj = {
+    // PERBAIKAN: Mengubah partnerImage menjadi URL valid/null sesuai hasil troubleshooting sebelumnya
+    const requestBodyObj = payload || {
         "referenceNo": shortid.generate(),
         "phoneNo": "08123456789",
         "email": "adit@smbpay.id",
@@ -166,7 +177,7 @@ const createAccount = async () => {
                 "callbackUrl": "https://your-callback-url.com/status",
                 "partnerInfo": {
                     "partnerName": "PartnerName",
-                    "partnerImage": ""
+                    "partnerImage": "https://dummyimage.com/400x400/000/fff" // Menggunakan placeholder URL
                 },
                 "redirectUrl": {
                     "successUrl": "https://your-success-url.com",
@@ -174,20 +185,24 @@ const createAccount = async () => {
                 }
             },
             "customerData": {
-                "idNumber": "1234567890123456",
+                "idNumber": "123445353627272",
                 "sourceOfFundCode": "02",
                 "purposeOfFundCode": "02",
                 "estimatedWithdrawCode": "01",
                 "estimatedDepositCode": "01",
-                "estimatedDepositAmount": "5000000",
-                "estimatedWithdrawAmount": "5000000"
+                "estimatedDepositAmount": "500000.00",
+                "estimatedWithdrawAmount": "500000.00"
             },
             "imageKtp": ""
         }
     };
 
+    console.log('\n--- LOG: CREATE ACCOUNT REQUEST (Symmetric Signature) ---');
+    console.log(`[REQUEST URL]: ${CREATE_ACCOUNT_URL}`);
+    console.log(`[RELATIVE PATH USED FOR SIGNATURE]: ${relativePath}`); // Log path untuk verifikasi
+
     try {
-        const { signature, stringToSign, hash, jsonString } = createSymmetricSignature(
+        const { signature, jsonString } = generateSymmetricSignature(
             httpMethod,
             relativePath,
             b2bAccessToken,
@@ -201,26 +216,30 @@ const createAccount = async () => {
             'X-SIGNATURE': signature,
             'X-CLIENT-KEY': CLIENT_ID,
             'Authorization': `Bearer ${b2bAccessToken}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
         };
 
-        // --- LOG SYMMETRIC SIGNATURE (Create Account) ---
-        console.log('\n--- LOG CREATE ACCOUNT REQUEST (Symmetric Signature) ---');
-        console.log(`[REQUEST BODY (Stable Stringify)]: ${jsonString}`);
-        console.log(`[BODY HASH (SHA-256)]: ${hash}`);
-        console.log(`[STRING TO SIGN]: ${stringToSign}`);
-        console.log(`[REQUEST HEADER] X-TIMESTAMP: ${srvTimestamp}`);
-        console.log(`[REQUEST HEADER] X-SIGNATURE: ${signature}`);
-        console.log(`[REQUEST URL]: ${CREATE_ACCOUNT_URL}`);
+        console.log('\n[REQUEST HEADERS]:');
+        console.log(`  X-TIMESTAMP: ${srvTimestamp}`);
+        console.log(`  X-SIGNATURE: ${signature.substring(0, 30)}... (omitted)`);
+        console.log(`  Authorization: Bearer ${b2bAccessToken.substring(0, 15)}... (omitted)`);
+        console.log(`\n[REQUEST BODY (JSON)]: ${jsonString}`);
         console.log('-------------------------------------------------------');
 
-        // Mengirim request ke API eksternal
         const response = await axios.post(CREATE_ACCOUNT_URL, jsonString, { headers });
-        console.log(`[RESPONSE CREATE ACCOUNT] Status: ${response.status}`);
+
+        console.log('\n--- LOG: CREATE ACCOUNT RESPONSE ---');
+        console.log(`[RESPONSE STATUS]: ${response.status}`);
+        console.log(`[RESPONSE BODY]: ${JSON.stringify(response.data)}`);
+        console.log('------------------------------------');
+
         return { status: response.status, data: response.data };
     } catch (error) {
         if (error.response) {
-            console.error(`❌ Gagal membuat akun! Server: ${error.response.status} ${JSON.stringify(error.response.data)}`);
+            console.error('\n--- LOG: CREATE ACCOUNT ERROR RESPONSE ---');
+            console.error(`❌ Gagal membuat akun! Server: ${error.response.status}`);
+            console.error(`[ERROR RESPONSE BODY]: ${JSON.stringify(error.response.data)}`);
+            console.error('------------------------------------------');
             return { status: error.response.status, data: error.response.data };
         } else {
             console.error(`❌ Gagal membuat akun! Error jaringan/lain: ${error.message}`);
@@ -229,25 +248,27 @@ const createAccount = async () => {
     }
 };
 
-// --- EXPRESS ROUTE ---
-
 app.use(express.json());
 
 app.post('/api/create-account', async (req, res) => {
-    // Catatan: Payload statis di dalam createAccount() diabaikan,
-    // dalam kasus nyata Anda akan meneruskan req.body ke fungsi createAccount.
-    const result = await createAccount();
+    const result = await createAccount(req.body);
     res.status(result.status).json(result.data);
 });
-
-// --- START SERVER ---
 
 app.listen(port, async () => {
     console.log(`Server berjalan di http://localhost:${port}`);
 
+    console.log('\n====================================');
+    console.log('       INISIATIF TOKEN CLIENT       ');
+    console.log('====================================');
     const tokenKlien = await getClientToken();
+
     if (tokenKlien) {
+        console.log('\n====================================');
+        console.log('        INISIATIF TOKEN B2B         ');
+        console.log('====================================');
         await getB2BToken();
     }
+
     console.log('\n✅ Initialization complete. Access API via POST http://localhost:3000/api/create-account');
 });
