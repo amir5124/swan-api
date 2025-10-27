@@ -12,6 +12,10 @@ const app = express();
 const port = 3000;
 
 app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+
+// Konfigurasi untuk menaikkan batas ukuran URL-encoded data (jika ada)
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 const CLIENT_ID = '0199dc00-f2df-74b1-95e4-8664bdaaa9dd';
 const CLIENT_SECRET = '425f8e4a-0f0c-474a-aa4f-64538f87bed4.0d.DIYVm+96QGa0mCg2X5JxRSG79BuHQJw+YGPV7aCuUIk=';
@@ -394,8 +398,6 @@ const getCardProfile = (accountId) => {
     return executeB2CTransaction('POST', CARD_PROFILE_RELATIVE_PATH, requestBodyObj, CARD_PROFILE_URL, 'Card Profile');
 };
 
-
-app.use(express.json());
 
 app.post('/api/account-creation', async (req, res) => {
     // === LOGGING REQUEST ===
