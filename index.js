@@ -8,13 +8,13 @@ const shortid = require('shortid');
 const stableStringify = require('json-stable-stringify');
 const cors = require('cors');
 
+const pool = require('./db/db'); // 1. IMPORT POOL DATABASE
+
 const app = express();
 const port = 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-
-// Konfigurasi untuk menaikkan batas ukuran URL-encoded data (jika ada)
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 const CLIENT_ID = '0199dc00-f2df-74b1-95e4-8664bdaaa9dd';
@@ -134,20 +134,11 @@ const getB2B2CToken = async () => {
     const httpMethod = 'POST';
     const relativePath = B2B2C_TOKEN_ENDPOINT;
 
-    // ===================================
-    // === LOGGING: START PROSES ===
-    // ===================================
-    console.log('\n--- [START] getB2B2CToken Process ---');
-
     if (!b2bAccessToken) {
-        // LOGGING ERROR Awal
-        console.error('ERROR: B2B Token is not available to retrieve B2B2C token.');
-        console.log('--- [END] getB2B2CToken Process (Failure - Missing B2B Token) ---\n');
         throw new Error('B2B Token is not available to retrieve B2B2C token.');
     }
 
     const authCode = AUTH_CODE;
-    // Asumsi: momentTimezone, B2B2C_TOKEN_ENDPOINT, B2B2C_TOKEN_URL, etc., sudah didefinisikan
     const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
 
     const requestBodyObj = {
@@ -167,54 +158,14 @@ const getB2B2CToken = async () => {
             'Content-Type': 'application/json'
         };
 
-        // ===================================
-        // === LOGGING: REQUEST YANG AKAN DIKIRIM (HEADERS & BODY) ===
-        // ===================================
-        console.log(`[REQUEST OUT] URL: ${B2B2C_TOKEN_URL}`);
-        console.log(`[REQUEST OUT] Method: ${httpMethod}`);
-        console.log('--- Request Headers ---');
-        console.log(JSON.stringify(headers, null, 2));
-        console.log('--- Request Body ---');
-        console.log(jsonString);
-        console.log('-------------------------------------');
-
-
         const response = await axios.post(B2B2C_TOKEN_URL, jsonString, { headers });
-
-        // ===================================
-        // === LOGGING: RESPONSE BERHASIL (HEADERS & BODY) ===
-        // ===================================
-        console.log(`[RESPONSE IN] Status: ${response.status}`);
-        console.log('--- Response Headers ---');
-        console.log(JSON.stringify(response.headers, null, 2));
-        console.log('--- Response Body (Success) ---');
-        console.log(JSON.stringify(response.data, null, 2));
-        console.log('--- [END] getB2B2CToken Process (Success) ---\n');
 
         return response.data.accessToken;
 
     } catch (error) {
-
-        // ===================================
-        // === LOGGING: RESPONSE GAGAL/ERROR ===
-        // ===================================
         if (error.response) {
-            // Log detail response error dari API
-            console.error(`[RESPONSE IN] Status: ${error.response.status}`);
-            console.error('--- Response Headers (Error) ---');
-            // Menampilkan headers error (jika ada)
-            console.error(JSON.stringify(error.response.headers, null, 2));
-            console.error('--- Response Body (Error) ---');
-            // Menampilkan body error
-            console.error(JSON.stringify(error.response.data, null, 2));
-            console.log('--- [END] getB2B2CToken Process (Failure - API Error) ---\n');
-
-            // Melempar error dengan pesan yang jelas
             throw new Error(`Failed to get B2B2C Token: ${error.response.data.responseMessage || error.response.status}`);
         } else {
-            // Log error jaringan
-            console.error(`[ERROR] Network error during B2B2C Token retrieval: ${error.message}`);
-            console.log('--- [END] getB2B2CToken Process (Failure - Network Error) ---\n');
             throw new Error(`Network error during B2B2C Token retrieval: ${error.message}`);
         }
     }
@@ -224,16 +175,10 @@ const executeB2CTransaction = async (httpMethod, relativePath, requestBodyObj, a
     const logPrefix = `[${endpointName.toUpperCase()}]`;
 
     if (!b2bAccessToken || !b2b2cAccessToken) {
-        console.error(`${logPrefix} ❌ GAGAL: Token otentikasi B2B/B2B2C belum siap.`);
         return { status: 503, data: { responseMessage: 'Authentication tokens are not ready. Please wait for server initialization.' } };
     }
 
     const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
-
-    console.log(`\n${logPrefix} ➡️ REQUEST (${new Date().toLocaleTimeString()}):`);
-    console.log(`Endpoint: ${relativePath}`);
-    console.log(`Body: ${JSON.stringify(requestBodyObj)}`);
-    console.log('--------------------------------------------------');
 
     try {
         const { signature, jsonString } = generateSymmetricSignature(
@@ -255,22 +200,12 @@ const executeB2CTransaction = async (httpMethod, relativePath, requestBodyObj, a
 
         const response = await axios.post(apiUrl, jsonString, { headers });
 
-        console.log(`${logPrefix} ✅ SUKSES (HTTP ${response.status}):`);
-        console.log(`Response Data: ${JSON.stringify(response.data)}`);
-        console.log('--------------------------------------------------');
-
         return { status: response.status, data: response.data };
 
     } catch (error) {
         if (error.response) {
-            console.error(`${logPrefix} ❌ ERROR API (HTTP ${error.response.status}):`);
-            console.error(`Response Data: ${JSON.stringify(error.response.data)}`);
-            console.log('--------------------------------------------------');
             return { status: error.response.status, data: error.response.data };
         } else {
-            console.error(`${logPrefix} ❌ ERROR JARINGAN:`);
-            console.error(`Detail: ${error.message}`);
-            console.log('--------------------------------------------------');
             return { status: 500, data: { responseMessage: `Network error: ${error.message}` } };
         }
     }
@@ -280,7 +215,6 @@ const executeB2BTransaction = async (httpMethod, relativePath, requestBodyObj, a
     const logPrefix = `[${endpointName.toUpperCase()}]`;
 
     if (!b2bAccessToken) {
-        console.error(`${logPrefix} ❌ GAGAL: Token B2B belum siap.`);
         return { status: 503, data: { responseMessage: 'B2B Token is not available. Please wait for server initialization.' } };
     }
 
@@ -290,13 +224,8 @@ const executeB2BTransaction = async (httpMethod, relativePath, requestBodyObj, a
 
     const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
 
-    console.log(`\n${logPrefix} ➡️ REQUEST (${new Date().toLocaleTimeString()}):`);
-    console.log(`Endpoint: ${relativePath}`);
-    console.log(`Body Diterima: ${JSON.stringify(requestBodyObj)}`);
-    console.log('--------------------------------------------------');
-
     try {
-        const { signature, stringToSign, hash, jsonString } = generateSymmetricSignature(
+        const { signature, jsonString } = generateSymmetricSignature(
             httpMethod, relativePath, b2bAccessToken, requestBodyObj, srvTimestamp, CLIENT_SECRET
         );
 
@@ -312,30 +241,14 @@ const executeB2BTransaction = async (httpMethod, relativePath, requestBodyObj, a
             'Content-Type': 'application/json',
         };
 
-        console.log(`${logPrefix} 🔑 SIGNATURE LOG:`);
-        console.log(`[REQUEST BODY (Stable Stringify)]: ${jsonString}`);
-        console.log(`[BODY HASH (SHA-256)]: ${hash}`);
-        console.log(`[STRING TO SIGN]: ${stringToSign}`);
-        console.log('--------------------------------------------------');
-
         const response = await axios.post(apiUrl, jsonString, { headers });
-
-        console.log(`${logPrefix} ✅ SUKSES (HTTP ${response.status}):`);
-        console.log(`Response Data: ${JSON.stringify(response.data)}`);
-        console.log('--------------------------------------------------');
 
         return { status: response.status, data: response.data };
 
     } catch (error) {
         if (error.response) {
-            console.error(`${logPrefix} ❌ ERROR API (HTTP ${error.response.status}):`);
-            console.error(`Response Data: ${JSON.stringify(error.response.data)}`);
-            console.log('--------------------------------------------------');
             return { status: error.response.status, data: error.response.data };
         } else {
-            console.error(`${logPrefix} ❌ ERROR JARINGAN:`);
-            console.error(`Detail: ${error.message}`);
-            console.log('--------------------------------------------------');
             return { status: 500, data: { responseMessage: `Network error: ${error.message}` } };
         }
     }
@@ -398,64 +311,135 @@ const getCardProfile = (accountId) => {
     return executeB2CTransaction('POST', CARD_PROFILE_RELATIVE_PATH, requestBodyObj, CARD_PROFILE_URL, 'Card Profile');
 };
 
+// 2. FUNGSI UNTUK MENYIMPAN DATA REGISTRASI KE DATABASE
+async function saveRegistrationData(reqBody, apiResponse) {
+    const {
+        userId,
+        phoneNo,
+        email,
+        name,
+        partnerReferenceNo,
+        additionalInfo
+    } = reqBody;
 
+    // Pastikan customerData ada sebelum diakses
+    const customerData = additionalInfo?.customerData || {};
+    const { idNumber, address } = customerData;
+
+    const {
+        responseCode,
+        responseMessage,
+        state,
+        additionalInfo: apiAdditionalInfo
+    } = apiResponse;
+    const webviewUrl = apiAdditionalInfo?.webViewUrl || null;
+
+    const query = `
+        INSERT INTO user_uduit (
+            jagel_user_id, phone_no, email, full_name, id_number, address,
+            partner_reference_no, api_response_code, api_response_message, api_state, webview_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    const values = [
+        userId,
+        phoneNo,
+        email,
+        name,
+        idNumber,
+        address,
+        partnerReferenceNo,
+        responseCode,
+        responseMessage,
+        state,
+        webviewUrl
+    ];
+
+    try {
+        const [result] = await pool.execute(query, values);
+        console.log(`[DB] ✅ Data registrasi user ID ${userId} berhasil disimpan. Insert ID: ${result.insertId}`);
+        return result;
+    } catch (dbError) {
+        console.error(`[DB] ❌ Gagal menyimpan data registrasi untuk user ID ${userId}:`, dbError);
+        throw new Error('Database insertion failed');
+    }
+}
+
+// 3. ENDPOINT VALIDASI STATUS PENGGUNA BARU
+app.post('/api/uduit/check-registration', async (req, res) => {
+    const { userId } = req.body;
+
+    if (!userId || userId === '{userid}') {
+        return res.status(200).json({ isRegistered: false, message: 'User ID is missing or invalid literal.' });
+    }
+
+    try {
+        const query = 'SELECT jagel_user_id FROM user_uduit WHERE jagel_user_id = ?';
+        const [rows] = await pool.execute(query, [userId]);
+
+        const isRegistered = rows.length > 0;
+
+        return res.status(200).json({
+            isRegistered: isRegistered,
+            message: isRegistered ? 'User is already registered.' : 'User not found in Uduit registration database.'
+        });
+
+    } catch (error) {
+        console.error('Error checking registration status in DB:', error);
+        return res.status(500).json({ isRegistered: false, message: 'Internal server error during database check.' });
+    }
+});
+
+
+// 4. MODIFIKASI ENDPOINT ACCOUNT CREATION (PENYIMPANAN DB)
 app.post('/api/account-creation', async (req, res) => {
-    // === LOGGING REQUEST ===
     console.log('--- Account Creation Request ---');
-    console.log('Headers:', req.headers);
     console.log('Body:', req.body);
-    console.log('------------------------------');
 
-    // Cek field wajib awal (phoneNo, email)
-    if (!req.body || !req.body.phoneNo || !req.body.email) {
-        const errorResponse = { responseMessage: 'phoneNo and email fields are required.' };
-        // === LOGGING RESPONSE (Error 400 - Missing Basic Fields) ===
-        console.log('--- Account Creation Response (400 - Basic Fields Missing) ---');
-        console.log('Status: 400');
-        console.log('Body:', errorResponse);
-        console.log('------------------------------------------------------------');
+    if (!req.body || !req.body.phoneNo || !req.body.email || !req.body.userId || !req.body.partnerReferenceNo) {
+        const errorResponse = { responseMessage: 'Missing mandatory fields: phoneNo, email, userId, or partnerReferenceNo.' };
+        return res.status(400).json(errorResponse);
+    }
+    if (req.body.userId === '{userid}') {
+        const errorResponse = { responseMessage: 'userId from Jagel is an invalid literal.' };
         return res.status(400).json(errorResponse);
     }
 
-    // Cek field wajib tambahan (additionalInfo.imageKtp, additionalInfo.customerData)
     const additionalInfo = req.body.additionalInfo;
     if (!additionalInfo || !additionalInfo.imageKtp || !additionalInfo.customerData) {
         const errorResponse = {
             responseCode: "4000000",
             responseMessage: "Missing Mandatory Field { additionalInfo.imageKtp, additionalInfo.customerData }."
         };
-        // === LOGGING RESPONSE (Error 400 - Missing Mandatory Fields) ===
-        console.log('--- Account Creation Response (400 - Mandatory Fields Missing) ---');
-        console.log('Status: 400');
-        console.log('Body:', errorResponse);
-        console.log('----------------------------------------------------------------');
-        // Menggunakan status 400 karena ini adalah Bad Request dari klien
         return res.status(400).json(errorResponse);
     }
 
     try {
         const result = await postAccountCreation(req.body);
 
-        // === LOGGING RESPONSE (Success/Other) ===
+        // CEK RESPON API EKSTERNAL DAN SIMPAN KE DB
+        if (result.status === 200 && result.data.responseCode === '2000600') {
+            try {
+                // Simpan data registrasi ke database Anda setelah API eksternal sukses
+                await saveRegistrationData(req.body, result.data);
+            } catch (dbError) {
+                // Jika DB gagal, log error tapi tetap lanjutkan respon sukses ke frontend
+                console.error('Peringatan: API sukses, tetapi GAGAL menyimpan ke database:', dbError.message);
+            }
+        }
+
         console.log(`--- Account Creation Response (${result.status}) ---`);
-        console.log('Status:', result.status);
         console.log('Body:', result.data);
-        console.log('------------------------------------------------');
 
         res.status(result.status).json(result.data);
     } catch (error) {
-        // Handle potential errors from postAccountCreation
         console.error('Error during account creation process:', error);
         const serverErrorResponse = { responseMessage: 'Internal Server Error' };
-        // === LOGGING RESPONSE (Error 500) ===
-        console.log('--- Account Creation Response (500) ---');
-        console.log('Status: 500');
-        console.log('Body:', serverErrorResponse);
-        console.log('-------------------------------------');
         res.status(500).json(serverErrorResponse);
     }
 });
 
+// ENDPOINT LAINNYA (TIDAK BERUBAH)
 app.post('/api/account-inquiry', async (req, res) => {
     if (!req.body || !req.body.accountId) {
         return res.status(400).json({ responseMessage: 'accountId is required.' });
@@ -536,8 +520,7 @@ app.listen(port, async () => {
     }
     console.log('------------------------------');
     console.log(`Available Endpoints:`);
-    console.log(`POST http://localhost:${port}/api/account-creation (B2B)`);
-    console.log(`POST http://localhost:${port}/api/account-inquiry (B2B)`);
-    console.log(`POST http://localhost:${port}/api/account-profile (B2B2C)`);
+    console.log(`POST http://localhost:${port}/api/account-creation (B2B, Saves DB)`);
+    console.log(`POST http://localhost:${port}/api/uduit/check-registration (DB Validation)`);
     console.log(`... and others.`);
 });
