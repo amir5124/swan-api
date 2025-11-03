@@ -393,8 +393,6 @@ app.post('/api/uduit/check-registration', async (req, res) => {
 
 // 4. MODIFIKASI ENDPOINT ACCOUNT CREATION (PENYIMPANAN DB)
 app.post('/api/account-creation', async (req, res) => {
-    console.log('--- Account Creation Request ---');
-    console.log('Body:', req.body);
 
     if (!req.body || !req.body.phoneNo || !req.body.email || !req.body.userId || !req.body.partnerReferenceNo) {
         const errorResponse = { responseMessage: 'Missing mandatory fields: phoneNo, email, userId, or partnerReferenceNo.' };
@@ -414,22 +412,42 @@ app.post('/api/account-creation', async (req, res) => {
         return res.status(400).json(errorResponse);
     }
 
-    try {
-        const result = await postAccountCreation(req.body);
+    const { phoneNo, email, userId } = req.body;
 
-        // CEK RESPON API EKSTERNAL DAN SIMPAN KE DB
-        if (result.status === 200 && result.data.responseCode === '2000600') {
-            try {
-                // Simpan data registrasi ke database Anda setelah API eksternal sukses
-                await saveRegistrationData(req.body, result.data);
-            } catch (dbError) {
-                // Jika DB gagal, log error tapi tetap lanjutkan respon sukses ke frontend
-                console.error('Peringatan: API sukses, tetapi GAGAL menyimpan ke database:', dbError.message);
+    try {
+        const checkQuery = `
+            SELECT phone_no, email 
+            FROM user_uduit 
+            WHERE phone_no = ? OR email = ?
+            LIMIT 1
+        `;
+        const [duplicateRows] = await pool.execute(checkQuery, [phoneNo, email]);
+
+        if (duplicateRows.length > 0) {
+            const existingData = duplicateRows[0];
+            let conflictField = '';
+
+            if (existingData.phone_no === phoneNo) {
+                conflictField = 'Nomor HP';
+            } else if (existingData.email === email) {
+                conflictField = 'Email';
             }
+
+            return res.status(409).json({
+                responseCode: "4090001",
+                responseMessage: `Pendaftaran gagal. ${conflictField} ini sudah terdaftar.`
+            });
         }
 
-        console.log(`--- Account Creation Response (${result.status}) ---`);
-        console.log('Body:', result.data);
+        const result = await postAccountCreation(req.body);
+
+        if (result.status === 200 && result.data.responseCode === '2000600') {
+            try {
+                await saveRegistrationData(req.body, result.data);
+            } catch (dbError) {
+                console.error('API sukses, tetapi GAGAL menyimpan ke database:', dbError.message);
+            }
+        }
 
         res.status(result.status).json(result.data);
     } catch (error) {
