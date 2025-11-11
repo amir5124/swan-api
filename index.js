@@ -111,8 +111,8 @@ const generateSymmetricSignature = (
     const hmacHex = crypto.createHmac('sha512', secretKey)
         .update(stringToSign)
         .digest('hex');
+    const signature = Buffer.from(hmacHex, 'hex').toString('base64');
 
-    const signature = Buffer.from(hmacHex).toString('base64');
 
     return { signature, stringToSign, hash, jsonString };
 };
