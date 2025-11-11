@@ -8,11 +8,14 @@ const shortid = require('shortid');
 const stableStringify = require('json-stable-stringify');
 const cors = require('cors');
 
-const pool = require('./db/db'); // 1. IMPORT POOL DATABASE
+// 1. IMPORT POOL DATABASE (Pastikan file ini ada)
+// Contoh isi: module.exports = require('mysql2/promise').createPool({ ... });
+const pool = require('./db/db');
 
 const app = express();
 const port = 3000;
 
+// --- KONFIGURASI UMUM ---
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
@@ -20,6 +23,9 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 const CLIENT_ID = '0199dc00-f2df-74b1-95e4-8664bdaaa9dd';
 const CLIENT_SECRET = '425f8e4a-0f0c-474a-aa4f-64538f87bed4.0d.DIYVm+96QGa0mCg2X5JxRSG79BuHQJw+YGPV7aCuUIk=';
 const BASE_URL = 'https://natsu-api-sandbox.smbpay.id';
+const PRIVATE_KEY_PATH = './private.pem';
+
+// --- ENDPOINTS TOKEN & TRANSAKSI RELATIVE PATHS ---
 const CLIENT_TOKEN_URL = `${BASE_URL}/oauth/token`;
 const B2B_TOKEN_ENDPOINT = '/v2.0/access-token/b2b/';
 const B2B2C_TOKEN_ENDPOINT = '/v2.0/access-token/b2b2c/';
@@ -49,13 +55,18 @@ const RESET_MPIN_URL = `${BASE_URL}${RESET_MPIN_RELATIVE_PATH}`;
 const TRANSACTION_HISTORY_URL = `${BASE_URL}${TRANSACTION_HISTORY_RELATIVE_PATH}`;
 const CARD_PROFILE_URL = `${BASE_URL}${CARD_PROFILE_RELATIVE_PATH}`;
 
-const PRIVATE_KEY_PATH = './private.pem';
-
+// --- VARIABEL AKSES TOKEN GLOBAL ---
 let clientAccessToken = null;
 let b2bAccessToken = null;
 let b2b2cAccessToken = null;
 
+// =======================================================
+//                   FUNGSI UTILITY KRIPTOGRAFI
+// =======================================================
 
+/**
+ * Membuat Asymmetric Signature untuk otentikasi B2B Token.
+ */
 const createAsymmetricSignature = (srvTimestamp, clientId, privateKeyPath) => {
     try {
         const privateKey = fs.readFileSync(privateKeyPath, 'utf8');
@@ -65,10 +76,14 @@ const createAsymmetricSignature = (srvTimestamp, clientId, privateKeyPath) => {
         const signature = signer.sign(privateKey, 'base64');
         return { signature, stringToSign };
     } catch (e) {
-        throw new Error('Asymmetric signature creation failed.');
+        console.error('Error in createAsymmetricSignature:', e.message);
+        throw new Error('Asymmetric signature creation failed. Check private.pem file.');
     }
 };
 
+/**
+ * Membuat Symmetric Signature (HMAC-SHA512) untuk otentikasi transaksi.
+ */
 const generateSymmetricSignature = (
     method,
     path,
@@ -77,10 +92,13 @@ const generateSymmetricSignature = (
     timestamp,
     secretKey
 ) => {
+    // 1. Stable Stringify payload
     let jsonString = stableStringify(payload);
 
+    // 2. Hash payload (SHA256)
     const hash = crypto.createHash('sha256').update(jsonString).digest('hex').toLowerCase();
 
+    // 3. Gabungkan String to Sign
     const stringToSign = [
         method,
         path,
@@ -89,6 +107,7 @@ const generateSymmetricSignature = (
         timestamp
     ].join(':');
 
+    // 4. Hitung HMAC-SHA512
     const hmacHex = crypto.createHmac('sha512', secretKey)
         .update(stringToSign)
         .digest('hex');
@@ -99,6 +118,13 @@ const generateSymmetricSignature = (
 };
 
 
+// =======================================================
+//                       FUNGSI TOKEN
+// =======================================================
+
+/**
+ * Mendapatkan Client Token (Langkah 1)
+ */
 const getClientToken = async () => {
     const data = { grant_type: 'client_credentials', client_id: CLIENT_ID, client_secret: CLIENT_SECRET };
     const payload = new URLSearchParams(data).toString();
@@ -108,10 +134,14 @@ const getClientToken = async () => {
         clientAccessToken = response.data.access_token;
         return clientAccessToken;
     } catch (error) {
+        console.error('[TOKEN] Gagal mendapatkan Client Token:', error.response?.data || error.message);
         return null;
     }
 };
 
+/**
+ * Mendapatkan B2B Token (Langkah 2)
+ */
 const getB2BToken = async () => {
     if (!clientAccessToken) return null;
     const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
@@ -126,10 +156,14 @@ const getB2BToken = async () => {
         b2bAccessToken = response.data.accessToken;
         return b2bAccessToken;
     } catch (error) {
+        console.error('[TOKEN] Gagal mendapatkan B2B Token:', error.response?.data || error.message);
         return null;
     }
 };
 
+/**
+ * Mendapatkan B2B2C Token (Langkah 3)
+ */
 const getB2B2CToken = async () => {
     const httpMethod = 'POST';
     const relativePath = B2B2C_TOKEN_ENDPOINT;
@@ -159,7 +193,6 @@ const getB2B2CToken = async () => {
         };
 
         const response = await axios.post(B2B2C_TOKEN_URL, jsonString, { headers });
-
         return response.data.accessToken;
 
     } catch (error) {
@@ -171,63 +204,42 @@ const getB2B2CToken = async () => {
     }
 };
 
-const executeB2CTransaction = async (httpMethod, relativePath, requestBodyObj, apiUrl, endpointName) => {
-    const logPrefix = `[${endpointName.toUpperCase()}]`;
+// =======================================================
+//                  FUNGSI EKSEKUSI TRANSAKSI
+// =======================================================
 
-    if (!b2bAccessToken || !b2b2cAccessToken) {
-        return { status: 503, data: { responseMessage: 'Authentication tokens are not ready. Please wait for server initialization.' } };
-    }
-
-    const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
-
-    try {
-        const { signature, jsonString } = generateSymmetricSignature(
-            httpMethod, relativePath, b2bAccessToken, requestBodyObj, srvTimestamp, CLIENT_SECRET
-        );
-
-        const headers = {
-            'Authorization-Customer': `Bearer ${b2b2cAccessToken}`,
-            'X-TIMESTAMP': srvTimestamp,
-            'X-SIGNATURE': signature,
-            'X-CLIENT-KEY': CLIENT_ID,
-            'X-DEVICE-ID': DEVICE_ID,
-            'X-IP-ADDRESS': IP_ADDRESS,
-            'X-LATITUDE': LATITUDE,
-            'X-LONGITUDE': LONGITUDE,
-            'Authorization': `Bearer ${b2bAccessToken}`,
-            'Content-Type': 'application/json',
-        };
-
-        const response = await axios.post(apiUrl, jsonString, { headers });
-
-        return { status: response.status, data: response.data };
-
-    } catch (error) {
-        if (error.response) {
-            return { status: error.response.status, data: error.response.data };
-        } else {
-            return { status: 500, data: { responseMessage: `Network error: ${error.message}` } };
-        }
-    }
-};
-
+/**
+ * Eksekusi Transaksi B2B yang hanya butuh B2B Token.
+ * Digunakan untuk: Account Creation (Registrasi) dan Account Inquiry.
+ */
 const executeB2BTransaction = async (httpMethod, relativePath, requestBodyObj, apiUrl, endpointName) => {
     const logPrefix = `[${endpointName.toUpperCase()}]`;
 
     if (!b2bAccessToken) {
+        console.error(`${logPrefix} ❌ GAGAL: B2B Token is not available.`);
         return { status: 503, data: { responseMessage: 'B2B Token is not available. Please wait for server initialization.' } };
     }
 
-    if (!requestBodyObj.referenceNo) {
-        requestBodyObj.referenceNo = shortid.generate();
+    if (!requestBodyObj.partnerReferenceNo) {
+        requestBodyObj.partnerReferenceNo = shortid.generate();
     }
 
     const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
 
     try {
-        const { signature, jsonString } = generateSymmetricSignature(
+        const { signature, jsonString, stringToSign, hash } = generateSymmetricSignature(
             httpMethod, relativePath, b2bAccessToken, requestBodyObj, srvTimestamp, CLIENT_SECRET
         );
+
+        // --- DEBUG LOGS KRITIS UNTUK SIGNATURE ---
+        console.log(`\n${logPrefix} [DEBUG] =======================================`);
+        console.log(`${logPrefix} [DEBUG] X-TIMESTAMP: ${srvTimestamp}`);
+        console.log(`${logPrefix} [DEBUG] Relative Path: ${relativePath}`);
+        console.log(`${logPrefix} [DEBUG] JSON Body HASH (SHA256): ${hash}`);
+        console.log(`${logPrefix} [DEBUG] String to Sign: ${stringToSign}`);
+        console.log(`${logPrefix} [DEBUG] X-SIGNATURE: ${signature}`);
+        console.log(`${logPrefix} [DEBUG] =======================================`);
+        // ----------------------------------------
 
         const headers = {
             'Authorization': `Bearer ${b2bAccessToken}`,
@@ -238,6 +250,56 @@ const executeB2BTransaction = async (httpMethod, relativePath, requestBodyObj, a
             'X-IP-ADDRESS': IP_ADDRESS,
             'X-LATITUDE': LATITUDE,
             'X-LONGITUDE': LONGITUDE,
+            'Content-Type': 'application/json',
+        };
+
+        const response = await axios.post(apiUrl, jsonString, { headers });
+
+        console.log(`${logPrefix} ✅ SUKSES. Status: ${response.status}`);
+        return { status: response.status, data: response.data };
+
+    } catch (error) {
+        if (error.response) {
+            console.error(`${logPrefix} ❌ GAGAL. Status: ${error.response.status}`);
+            console.error(`${logPrefix} Detail Error: ${error.response.data.responseMessage || JSON.stringify(error.response.data)}`);
+            return { status: error.response.status, data: error.response.data };
+        } else {
+            console.error(`${logPrefix} ❌ GAGAL. Network error: ${error.message}`);
+            return { status: 500, data: { responseMessage: `Network error: ${error.message}` } };
+        }
+    }
+};
+
+/**
+ * Eksekusi Transaksi B2C yang butuh B2B Token dan B2B2C Token.
+ * Digunakan untuk: Profile, Balance, MPIN, History, Card Inquiry.
+ */
+const executeB2CTransaction = async (httpMethod, relativePath, requestBodyObj, apiUrl, endpointName) => {
+    const logPrefix = `[${endpointName.toUpperCase()}]`;
+
+    if (!b2bAccessToken || !b2b2cAccessToken) {
+        console.error(`${logPrefix} ❌ GAGAL: B2B/B2B2C Token is not available.`);
+        return { status: 503, data: { responseMessage: 'Authentication tokens are not ready. Please wait for server initialization.' } };
+    }
+
+    // Hanya B2B Token yang digunakan untuk perhitungan signature
+    const srvTimestamp = momentTimezone().tz('Asia/Jakarta').format('YYYY-MM-DDTHH:mm:ss') + '+07:00';
+
+    try {
+        const { signature, jsonString } = generateSymmetricSignature(
+            httpMethod, relativePath, b2bAccessToken, requestBodyObj, srvTimestamp, CLIENT_SECRET
+        );
+
+        const headers = {
+            'Authorization-Customer': `Bearer ${b2b2cAccessToken}`, // B2B2C Token di sini
+            'X-TIMESTAMP': srvTimestamp,
+            'X-SIGNATURE': signature,
+            'X-CLIENT-KEY': CLIENT_ID,
+            'X-DEVICE-ID': DEVICE_ID,
+            'X-IP-ADDRESS': IP_ADDRESS,
+            'X-LATITUDE': LATITUDE,
+            'X-LONGITUDE': LONGITUDE,
+            'Authorization': `Bearer ${b2bAccessToken}`, // B2B Token di sini
             'Content-Type': 'application/json',
         };
 
@@ -254,8 +316,12 @@ const executeB2BTransaction = async (httpMethod, relativePath, requestBodyObj, a
     }
 };
 
+// =======================================================
+//                  FUNGSI API SERVICE CALL
+// =======================================================
 
 const postAccountCreation = (requestBodyObj) => {
+    // Memanggil executeB2BTransaction, yang TIDAK menggunakan b2b2cAccessToken.
     return executeB2BTransaction('POST', ACCOUNT_CREATION_RELATIVE_PATH, requestBodyObj, ACCOUNT_CREATION_URL, 'Account Creation');
 };
 
@@ -311,7 +377,10 @@ const getCardProfile = (accountId) => {
     return executeB2CTransaction('POST', CARD_PROFILE_RELATIVE_PATH, requestBodyObj, CARD_PROFILE_URL, 'Card Profile');
 };
 
-// 2. FUNGSI UNTUK MENYIMPAN DATA REGISTRASI KE DATABASE
+// =======================================================
+//                  FUNGSI DATABASE (DB)
+// =======================================================
+
 async function saveRegistrationData(reqBody, apiResponse) {
     const {
         userId,
@@ -322,7 +391,6 @@ async function saveRegistrationData(reqBody, apiResponse) {
         additionalInfo
     } = reqBody;
 
-    // Pastikan customerData ada sebelum diakses
     const customerData = additionalInfo?.customerData || {};
     const { idNumber, address } = customerData;
 
@@ -361,11 +429,16 @@ async function saveRegistrationData(reqBody, apiResponse) {
         return result;
     } catch (dbError) {
         console.error(`[DB] ❌ Gagal menyimpan data registrasi untuk user ID ${userId}:`, dbError);
-        throw new Error('Database insertion failed');
+        // Jangan melempar error agar API utama tetap bisa merespon
+        // throw new Error('Database insertion failed'); 
     }
 }
 
-// 3. ENDPOINT VALIDASI STATUS PENGGUNA BARU
+// =======================================================
+//                      ENDPOINTS API
+// =======================================================
+
+// 1. ENDPOINT VALIDASI STATUS PENGGUNA BARU (DB CHECK)
 app.post('/api/uduit/check-registration', async (req, res) => {
     const { userId } = req.body;
 
@@ -391,18 +464,21 @@ app.post('/api/uduit/check-registration', async (req, res) => {
 });
 
 
-// 4. MODIFIKASI ENDPOINT ACCOUNT CREATION (PENYIMPANAN DB)
+// 2. ENDPOINT ACCOUNT CREATION (B2B Transaction)
 app.post('/api/account-creation', async (req, res) => {
+    const { phoneNo, email, userId } = req.body;
 
-    if (!req.body || !req.body.phoneNo || !req.body.email || !req.body.userId || !req.body.partnerReferenceNo) {
+    // Validasi input dasar
+    if (!phoneNo || !email || !userId || !req.body.partnerReferenceNo) {
         const errorResponse = { responseMessage: 'Missing mandatory fields: phoneNo, email, userId, or partnerReferenceNo.' };
         return res.status(400).json(errorResponse);
     }
-    if (req.body.userId === '{userid}') {
+    if (userId === '{userid}') {
         const errorResponse = { responseMessage: 'userId from Jagel is an invalid literal.' };
         return res.status(400).json(errorResponse);
     }
 
+    // Validasi data tambahan (KTP, Customer Data)
     const additionalInfo = req.body.additionalInfo;
     if (!additionalInfo || !additionalInfo.imageKtp || !additionalInfo.customerData) {
         const errorResponse = {
@@ -412,9 +488,8 @@ app.post('/api/account-creation', async (req, res) => {
         return res.status(400).json(errorResponse);
     }
 
-    const { phoneNo, email, userId } = req.body;
-
     try {
+        // Cek duplikasi di database lokal sebelum memanggil API eksternal
         const checkQuery = `
             SELECT phone_no, email 
             FROM user_uduit 
@@ -439,14 +514,12 @@ app.post('/api/account-creation', async (req, res) => {
             });
         }
 
+        // Panggil API Account Creation (Menggunakan B2B Token)
         const result = await postAccountCreation(req.body);
 
+        // Simpan ke database hanya jika API sukses (responseCode 2000600)
         if (result.status === 200 && result.data.responseCode === '2000600') {
-            try {
-                await saveRegistrationData(req.body, result.data);
-            } catch (dbError) {
-                console.error('API sukses, tetapi GAGAL menyimpan ke database:', dbError.message);
-            }
+            await saveRegistrationData(req.body, result.data);
         }
 
         res.status(result.status).json(result.data);
@@ -457,7 +530,7 @@ app.post('/api/account-creation', async (req, res) => {
     }
 });
 
-// ENDPOINT LAINNYA (TIDAK BERUBAH)
+// 3. ENDPOINT LAINNYA (B2B)
 app.post('/api/account-inquiry', async (req, res) => {
     if (!req.body || !req.body.accountId) {
         return res.status(400).json({ responseMessage: 'accountId is required.' });
@@ -466,6 +539,7 @@ app.post('/api/account-inquiry', async (req, res) => {
     res.status(result.status).json(result.data);
 });
 
+// 4. ENDPOINT LAINNYA (B2C - Butuh B2B2C Token)
 app.post('/api/account-profile', async (req, res) => {
     const { accountId } = req.body;
     if (!accountId) return res.status(400).json({ responseMessage: 'accountId is required.' });
@@ -515,6 +589,10 @@ app.post('/api/card-profile', async (req, res) => {
 });
 
 
+// =======================================================
+//                     SERVER STARTUP
+// =======================================================
+
 app.listen(port, async () => {
     console.log(`Server berjalan di http://localhost:${port}`);
     console.log('--- Token Initialization ---');
@@ -525,20 +603,28 @@ app.listen(port, async () => {
 
         const tokenB2B = await getB2BToken();
         if (!tokenB2B) throw new Error('Failed to get B2B Token. Initialization failed.');
-        console.log('✅ B2B Token acquired.');
+        console.log('✅ B2B Token acquired. Ready to use for B2B endpoints.');
 
-        b2b2cAccessToken = await getB2B2CToken();
-        if (!b2b2cAccessToken) throw new Error('Failed to get B2B2C Access Token.');
-
-        console.log('✅ B2B2C Token acquired. Ready to use.');
+        // Mencoba mendapatkan B2B2C Token (B2B2C token hanya diperlukan untuk endpoint B2C)
+        try {
+            b2b2cAccessToken = await getB2B2CToken();
+            if (b2b2cAccessToken) {
+                console.log('✅ B2B2C Token acquired. Ready for B2C endpoints.');
+            } else {
+                console.warn('⚠️ Gagal mendapatkan B2B2C Access Token. Endpoint B2C mungkin gagal.');
+            }
+        } catch (b2cError) {
+            console.error(`❌ Error saat mengambil B2B2C Token: ${b2cError.message}`);
+            console.warn('⚠️ Endpoint B2C (Profile, Balance, dll) mungkin gagal.');
+        }
 
     } catch (error) {
-        console.error(`\n❌ Fatal Initialization Error: ${error.message}`);
-        console.error('Server is running but token setup failed. Check the token values and private.pem.');
+        console.error(`\n❌ Fatal Initialization Error (Client/B2B Token): ${error.message}`);
+        console.error('Server is running but critical token setup failed. Check the token values and private.pem.');
     }
     console.log('------------------------------');
     console.log(`Available Endpoints:`);
-    console.log(`POST http://localhost:${port}/api/account-creation (B2B, Saves DB)`);
-    console.log(`POST http://localhost:${port}/api/uduit/check-registration (DB Validation)`);
-    console.log(`... and others.`);
+    console.log(`POST http://localhost:${port}/api/account-creation (B2B)`);
+    console.log(`POST http://localhost:${port}/api/uduit/check-registration (DB)`);
+    console.log(`POST http://localhost:${port}/api/account-profile (B2C)`);
 });
