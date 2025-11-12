@@ -394,6 +394,7 @@ app.post('/api/uduit/check-registration', async (req, res) => {
 // 4. MODIFIKASI ENDPOINT ACCOUNT CREATION (PENYIMPANAN DB)
 app.post('/api/account-creation', async (req, res) => {
 
+    // --- 1. Validasi Input ---
     if (!req.body || !req.body.phoneNo || !req.body.email || !req.body.userId || !req.body.partnerReferenceNo) {
         const errorResponse = { responseMessage: 'Missing mandatory fields: phoneNo, email, userId, or partnerReferenceNo.' };
         return res.status(400).json(errorResponse);
@@ -415,6 +416,7 @@ app.post('/api/account-creation', async (req, res) => {
     const { phoneNo, email, userId } = req.body;
 
     try {
+        // --- 2. Cek Duplikasi Data ---
         const checkQuery = `
             SELECT phone_no, email 
             FROM user_uduit 
@@ -439,6 +441,7 @@ app.post('/api/account-creation', async (req, res) => {
             });
         }
 
+        // --- 3. Panggil API Bank ---
         const result = await postAccountCreation(req.body);
 
         if (result.status === 200 && result.data.responseCode === '2000600') {
@@ -446,16 +449,16 @@ app.post('/api/account-creation', async (req, res) => {
             // 🚀 FIRE-AND-FORGET: Kirim respons ke frontend segera!
             res.status(result.status).json(result.data);
 
-            // Simpan data di background tanpa menunggu (mengurangi delay pada frontend)
+            // Simpan data di background tanpa menunggu (Non-blocking DB write)
             saveRegistrationData(req.body, result.data)
                 .catch(dbError => {
                     console.error('API sukses, tetapi GAGAL menyimpan ke database:', dbError.message);
                 });
 
-            return; // Penting: Mengakhiri eksekusi di sini.
+            return; // Penting: Mengakhiri eksekusi endpoint setelah mengirim respons.
         }
 
-        // Jika respons bukan sukses (2000600), kirim status normal
+        // Jika respons bukan sukses, kirim status normal
         res.status(result.status).json(result.data);
 
     } catch (error) {
