@@ -442,14 +442,22 @@ app.post('/api/account-creation', async (req, res) => {
         const result = await postAccountCreation(req.body);
 
         if (result.status === 200 && result.data.responseCode === '2000600') {
-            try {
-                await saveRegistrationData(req.body, result.data);
-            } catch (dbError) {
-                console.error('API sukses, tetapi GAGAL menyimpan ke database:', dbError.message);
-            }
+
+            // 🚀 FIRE-AND-FORGET: Kirim respons ke frontend segera!
+            res.status(result.status).json(result.data);
+
+            // Simpan data di background tanpa menunggu (mengurangi delay pada frontend)
+            saveRegistrationData(req.body, result.data)
+                .catch(dbError => {
+                    console.error('API sukses, tetapi GAGAL menyimpan ke database:', dbError.message);
+                });
+
+            return; // Penting: Mengakhiri eksekusi di sini.
         }
 
+        // Jika respons bukan sukses (2000600), kirim status normal
         res.status(result.status).json(result.data);
+
     } catch (error) {
         console.error('Error during account creation process:', error);
         const serverErrorResponse = { responseMessage: 'Internal Server Error' };
